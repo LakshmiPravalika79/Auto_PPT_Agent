@@ -1,0 +1,9 @@
+langchain
+langchain-core
+langchain-community
+mcp
+python-pptx
+requests
+duckduckgo-search
+python-dotenv
+groq

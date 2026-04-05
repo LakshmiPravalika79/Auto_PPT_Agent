@@ -1,0 +1,5 @@
+openai
+langchain==0.1.16
+langchain-openai==0.0.8
+python-dotenv
+mcp
