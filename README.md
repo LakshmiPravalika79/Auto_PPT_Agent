@@ -89,4 +89,4 @@ We chose **FastMCP** for its high-level abstraction and ease of integration. The
 
 ---
 
-Designed with ❤️ for the Calibo AI Academy.
+Designed with ❤️ as part of the Calibo AI Academy training.
