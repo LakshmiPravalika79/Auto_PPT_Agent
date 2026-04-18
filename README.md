@@ -1,4 +1,4 @@
-# Auto-PPT Agent: Gamma-Style Presentation AI 🚀
+# Auto-PPT Agent: 🚀
 
 Auto-PPT Agent is a professional-grade, automated presentation generation platform. It leverages state-of-the-art LLMs, Model Context Protocol (MCP), and generative AI imagery to transform a single text prompt into a fully-structured, visually stunning PowerPoint presentation in seconds.
 
