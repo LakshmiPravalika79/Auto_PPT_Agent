@@ -150,7 +150,42 @@ FINAL RULE:
 """)
 
 
-async def run_agent(user_input: str):
+async def generate_outline(user_input: str) -> list:
+    print("[DEBUG] Generating Outline...")
+    llm = HF_LLM()
+    prompt = PromptTemplate.from_template("""You are an expert Presentation Generator and structural planner.
+Topic: {input}
+
+CRITICAL RULES FOR CONTENT:
+1. "bullets" MUST contain highly informative, detailed explanatory sentences (15-25 words each). Do NOT just output short highlight words. Provide real, valuable knowledge, data, and context.
+2. "image_search_query" MUST be a highly descriptive, visual string meant for a stock-photo search engine. Describe exactly what the photo should intuitively contain (e.g., "glowing futuristic processor chip abstract" or "corporate business people handshaking architecture"). Do NOT just use the slide title as the query!
+
+Return ONLY a valid JSON object. NO markdown blocks, NO explanations.
+The JSON object must contain EXACTLY ONE key named "slides" which is an array of 5 slide objects.
+Format:
+{{
+  "slides": [
+    {{
+      "title": "Clear Engaging Slide Title", 
+      "bullets": ["Detailed, professional sentence explaining a key concept comprehensively.", "Another comprehensive elaboration packed with actual knowledge and insight.", "A final concluding data-point or analytical observation relevant to the topic."], 
+      "image_search_query": "highly descriptive visual scene stock photo"
+    }}
+  ]
+}}""").format(input=user_input)
+    response = await llm._acall(prompt)
+    try:
+        match = re.search(r'\{.*\}', response, re.DOTALL)
+        if match:
+            raw_json = match.group(0)
+            return json.loads(raw_json).get("slides", [])
+        return json.loads(response).get("slides", [])
+    except Exception as e:
+        print(f"[ERROR] Failed to parse JSON outline: {e}")
+        return [
+            {"title": "Overview", "bullets": ["Point 1", "Point 2"], "image_search_query": "universe presentation background"}
+        ]
+
+async def run_agent(user_input: str, theme: str = "dark", provided_slides: list = None):
 
     topic_filename = extract_topic(user_input)
 
@@ -164,115 +199,71 @@ async def run_agent(user_input: str):
         command=sys.executable, args=["mcp/servers/web_search_server.py"]
     )
 
-    print("[DEBUG] Step 2: Starting MCP stdio clients...")
-
     try:
         async with stdio_client(ppt_params) as (ppt_r, ppt_w), \
                    stdio_client(search_params) as (search_r, search_w):
 
-            print("[DEBUG] Step 3: MCP processes started")
-
             async with ClientSession(ppt_r, ppt_w) as ppt, \
                        ClientSession(search_r, search_w) as search:
 
-                print("[DEBUG] Step 4: Initializing PPT session...")
                 await ppt.initialize()
-                print("[DEBUG] PPT initialized successfully")
-
-                print("[DEBUG] Step 5: Initializing Search session...")
                 await search.initialize()
-                print("[DEBUG] Search initialized successfully")
-
-                print("[DEBUG] Step 6: Creating tools...")
-
-                _presentation_created = False
 
                 def extract_url(text: str) -> str:
                     match = re.search(r'https?://[^\s]+', text)
                     return match.group(0) if match else ""
 
-                async def create_presentation(_: str) -> str:
-                    nonlocal _presentation_created
-                    if _presentation_created:
-                        return "already created — go to add_slide"
-                    result = await ppt.call_tool("create_presentation", {})
-                    _presentation_created = True
-                    return _extract(result)
+                async def create_presentation(theme: str) -> str:
+                    return _extract(await ppt.call_tool("create_presentation", {"theme": theme}))
 
                 async def add_slide(_: str) -> str:
                     return _extract(await ppt.call_tool("add_slide", {}))
 
-                async def write_text(x: str) -> str:
-                    try:
-                        args = json.loads(x)
-                    except Exception:
-                        return "error: input must be JSON with title and bullets"
+                async def write_text(title: str, bullets: list, layout: str) -> str:
+                    args = {"title": title, "bullets": bullets, "layout": layout}
                     return _extract(await ppt.call_tool("write_text", args))
-
-                async def search_web(x: str) -> str:
-                    return _extract(await search.call_tool("search_web", {"query": x}))
 
                 async def search_image(x: str) -> str:
                     raw = _extract(await search.call_tool("search_image", {"query": x}))
                     url = extract_url(raw)
                     return url if url else ""
 
-
-                async def add_image(x: str) -> str:
-                    url = extract_url(x)
+                async def add_image(url: str, layout: str) -> str:
                     if not url:
-                        return "error: invalid image url"
-                    return _extract(await ppt.call_tool("add_image", {"url": url}))
-
-                _saved = False
+                        return "error"
+                    return _extract(await ppt.call_tool("add_image", {"url": url, "layout": layout}))
 
                 async def save_presentation(_: str) -> str:
-                    nonlocal _saved
-                    _saved = True
                     return _extract(await ppt.call_tool("save_presentation", {"filename": topic_filename}))
 
-                tools = [
-                    Tool(name="create_presentation", func=lambda _: None, coroutine=create_presentation,
-                         description="Create blank presentation. Call ONCE at start. No input."),
-                    Tool(name="add_slide", func=lambda _: None, coroutine=add_slide,
-                         description="Add a new slide. No input."),
-                    Tool(name="write_text", func=lambda _: None, coroutine=write_text,
-                         description='Write slide content. Input: {"title":"...","bullets":["...","..."]}'),
-                    Tool(name="search_web", func=lambda _: None, coroutine=search_web,
-                         description="Search web for facts. Input: query string. May return no results."),
-                    Tool(name="search_image", func=lambda _: None, coroutine=search_image,
-                         description="Find relevant image URL. Input: short query. Returns URL or None."),
-                    Tool(name="add_image", func=lambda _: None, coroutine=add_image,
-                         description="Embed image in current slide. Input: image URL. Call for every slide."),
-                    Tool(name="save_presentation", func=lambda _: None, coroutine=save_presentation,
-                         description="Save presentation to disk. Call ONCE at end. No input."),
-                ]
+                if provided_slides:
+                    slides = provided_slides
+                else:
+                    slides = await generate_outline(user_input)
 
-                print("[DEBUG] Step 7: Initializing LLM...")
-                llm = HF_LLM()
+                print("[DEBUG] Step 9: Assembling presentation procedurally...")
+                
+                import random
+                await create_presentation(theme)
+                
+                for i, slide in enumerate(slides):
+                    print(f"[PROCEDURAL] Building Slide: {slide.get('title')}")
+                    await add_slide("")
+                    
+                    layouts = ["image_right", "image_left"]
+                    if i == 0: layouts = ["center"]  # Always center title
+                    layout_choice = random.choice(layouts)
+                    
+                    await write_text(slide.get("title", ""), slide.get("bullets", []), layout_choice)
+                    
+                    if layout_choice != "center":
+                        img_url = await search_image(slide.get("image_search_query", user_input))
+                        if img_url and "error" not in img_url:
+                            await add_image(img_url, layout_choice)
 
-                print("[DEBUG] Step 8: Creating LangChain agent...")
-                agent = create_react_agent(llm, tools, REACT_PROMPT)
-                executor = AgentExecutor(
-                    agent=agent,
-                    tools=tools,
-                    verbose=True,
-                    handle_parsing_errors=True,
-                    max_iterations=30,
-                    return_intermediate_steps=False,
-                )
-
-                print("[DEBUG] Step 9: Running agent...")
-
-                try:
-                    result = await executor.ainvoke({"input": user_input})
-                    print("[DEBUG] Agent completed successfully")
-                    return result
-
-                finally:
-                    print("[DEBUG] Ensuring presentation is saved...")
-                    if not _saved:
-                        await ppt.call_tool("save_presentation", {"filename": topic_filename})
+                result = await save_presentation("")
+                print("[DEBUG] Presentation completed procedurally.")
+                return result
 
     except Exception as e:
         print("\n[ERROR] Something failed:", e)
